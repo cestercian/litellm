@@ -31,6 +31,7 @@ from litellm.proxy.auth.auth_checks import _delete_cache_key_object, _project_ca
 from litellm.proxy.auth.user_api_key_auth import UserAPIKeyAuth
 from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
 from litellm.proxy.management_endpoints.key_management_endpoints import (
+    _can_user_query_key_info,
     _check_org_key_limits,
     _check_project_key_limits,
     _check_team_key_limits,
@@ -5472,6 +5473,89 @@ async def test_can_delete_verification_token_personal_key_no_user_id(monkeypatch
     )
 
     assert result is False
+
+
+@pytest.mark.asyncio
+async def test_can_user_query_key_info_null_user_cannot_read_another_null_user_key():
+    caller = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id=None,
+        api_key="hash-of-ka",
+    )
+    other = LiteLLM_VerificationToken(
+        token="hash-of-kb",
+        user_id=None,
+        team_id=None,
+    )
+    own = LiteLLM_VerificationToken(
+        token="hash-of-ka",
+        user_id=None,
+        team_id=None,
+    )
+    same_user_target = LiteLLM_VerificationToken(
+        token="hash-of-same-user-other-key",
+        user_id="user-a",
+        team_id=None,
+    )
+    other_user_target = LiteLLM_VerificationToken(
+        token="hash-of-user-b-key",
+        user_id="user-b",
+        team_id=None,
+    )
+    same_user_caller = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="user-a",
+        api_key="hash-of-user-a-key",
+    )
+
+    assert (
+        await _can_user_query_key_info(
+            user_api_key_dict=caller,
+            key="hash-of-kb",
+            key_info=other,
+        )
+        is False
+    )
+    assert (
+        await _can_user_query_key_info(
+            user_api_key_dict=caller,
+            key="sk-kb-plaintext",
+            key_info=other,
+        )
+        is False
+    )
+    assert (
+        await _can_user_query_key_info(
+            user_api_key_dict=caller,
+            key="hash-of-ka",
+            key_info=own,
+        )
+        is True
+    )
+    assert (
+        await _can_user_query_key_info(
+            user_api_key_dict=caller,
+            key="sk-ka-plaintext",
+            key_info=own,
+        )
+        is True
+    )
+    assert (
+        await _can_user_query_key_info(
+            user_api_key_dict=same_user_caller,
+            key="hash-of-same-user-other-key",
+            key_info=same_user_target,
+        )
+        is True
+    )
+    assert (
+        await _can_user_query_key_info(
+            user_api_key_dict=same_user_caller,
+            key="hash-of-user-b-key",
+            key_info=other_user_target,
+        )
+        is False
+    )
 
 
 @pytest.mark.asyncio

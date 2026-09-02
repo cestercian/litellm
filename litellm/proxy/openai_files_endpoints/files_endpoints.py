@@ -66,6 +66,7 @@ from litellm.proxy.openai_files_endpoints.common_utils import (
     get_credentials_for_model,
     handle_model_based_routing,
     prepare_data_with_credentials,
+    reject_unscoped_provider_file_list,
     validate_file_list_limit,
     validate_managed_files_requirement,
     validate_managed_id_requirement,
@@ -1490,7 +1491,7 @@ async def list_files(
         )
 
         if should_route and credentials is not None:
-            # Use model-based routing with credentials from config
+            reject_unscoped_provider_file_list()
             prepare_data_with_credentials(data=data, credentials=credentials)
             response = await litellm.afile_list(
                 custom_llm_provider=credentials["custom_llm_provider"],
@@ -1501,6 +1502,7 @@ async def list_files(
             verbose_proxy_logger.debug("Listed files using model: %s", model_used)
 
         elif target_model_names and isinstance(target_model_names, str):
+            reject_unscoped_provider_file_list()
             target_model_names_list: Final = target_model_names.split(",")
             if len(target_model_names_list) != 1:
                 raise HTTPException(
@@ -1540,6 +1542,7 @@ async def list_files(
                     after=after,
                 )
             else:
+                reject_unscoped_provider_file_list()
                 resolved_custom_llm_provider: Final = custom_llm_provider or "openai"
                 apply_team_provider_credentials(
                     data=data,

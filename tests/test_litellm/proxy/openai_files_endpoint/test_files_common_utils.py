@@ -2,11 +2,12 @@ from types import MappingProxyType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
+from fastapi import HTTPException
 
 from litellm.proxy.openai_files_endpoints.common_utils import (
     apply_unified_file_ids,
     map_raw_file_ids_to_unified,
+    reject_unscoped_provider_file_list,
 )
 from litellm.types.utils import LiteLLMBatch
 
@@ -478,3 +479,16 @@ class TestCompletedBatchSafeToRetire:
 
     def test_no_output_and_unknown_counts_is_not_safe(self):
         assert _completed_batch_safe_to_retire(_completed_batch_for_retire(None)) is False
+
+
+def test_reject_unscoped_provider_file_list_is_noop_when_flag_off(monkeypatch):
+    monkeypatch.setattr("litellm.require_managed_files", False)
+    reject_unscoped_provider_file_list()
+
+
+def test_reject_unscoped_provider_file_list_raises_when_flag_on(monkeypatch):
+    monkeypatch.setattr("litellm.require_managed_files", True)
+    with pytest.raises(HTTPException) as exc_info:
+        reject_unscoped_provider_file_list()
+    assert exc_info.value.status_code == 400
+    assert "managed file store" in str(exc_info.value.detail).lower()
