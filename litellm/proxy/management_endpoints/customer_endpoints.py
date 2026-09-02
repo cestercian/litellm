@@ -521,9 +521,11 @@ async def end_user_info(
         user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN
         and user_api_key_dict.user_role != LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY
     ):
-        raise HTTPException(
-            status_code=401,
-            detail={"error": f"Admin-only endpoint. Your user role={user_api_key_dict.user_role}"},
+        raise ProxyException(
+            message=f"Admin-only endpoint. Your user role={user_api_key_dict.user_role}",
+            type=ProxyErrorTypes.auth_error,
+            param="user_role",
+            code=401,
         )
 
     try:

@@ -708,7 +708,11 @@ def test_info_customer_rejects_non_proxy_admin(mock_prisma_client, role):
         app.dependency_overrides = original_overrides
 
     assert response.status_code == 401
-    assert "Admin-only endpoint" in response.text
+    error = response.json()["error"]
+    assert "Admin-only endpoint" in error["message"]
+    assert error["type"] == "auth_error"
+    assert error["param"] == "user_role"
+    assert error["code"] == "401"
     mock_prisma_client.db.litellm_endusertable.find_first.assert_not_called()
 
 
