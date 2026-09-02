@@ -673,6 +673,71 @@ async def test_get_customer_daily_activity_service_account_key_is_rejected(monke
     get_daily_activity_mock.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "role",
+    [
+        LitellmUserRoles.ORG_ADMIN,
+        LitellmUserRoles.INTERNAL_USER,
+        LitellmUserRoles.INTERNAL_USER_VIEW_ONLY,
+        None,
+    ],
+)
+def test_info_customer_rejects_non_proxy_admin(mock_prisma_client, role):
+    """
+    Security regression: GET /customer/info must be proxy-admin only, matching
+    /customer/list.
+
+    The route is on org_admin_allowed_routes, so an org-admin of org X can pass
+    the route gate by sending organization_id=X. The handler used to look up
+    end_user_id globally with no role or org check, leaking any customer's
+    budget, spend, and alias. LiteLLM_EndUserTable has no organization_id
+    column, so org-scoped reads are not possible.
+    """
+    original_overrides = app.dependency_overrides.copy()
+    app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_id="org-admin-1" if role is not None else None,
+        user_role=role,
+    )
+    mock_prisma_client.db.litellm_endusertable.find_first = AsyncMock(
+        return_value=_row(_FULL_DB_ROW)
+    )
+    try:
+        response = client.get(
+            "/customer/info?end_user_id=cust-secret-1&organization_id=org-x",
+            headers={"Authorization": "Bearer test-key"},
+        )
+    finally:
+        app.dependency_overrides = original_overrides
+
+    assert response.status_code == 401
+    assert "Admin-only endpoint" in response.text
+    mock_prisma_client.db.litellm_endusertable.find_first.assert_not_called()
+
+
+def test_info_customer_proxy_admin_view_only_can_read(mock_prisma_client):
+    """PROXY_ADMIN_VIEW_ONLY has read parity with PROXY_ADMIN on /customer/info."""
+    original_overrides = app.dependency_overrides.copy()
+    app.dependency_overrides[user_api_key_auth] = lambda: UserAPIKeyAuth(
+        user_id="viewer",
+        user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
+    )
+    mock_prisma_client.db.litellm_endusertable.find_first = AsyncMock(
+        return_value=_row(_FULL_DB_ROW)
+    )
+    try:
+        response = client.get(
+            "/customer/info?end_user_id=c1",
+            headers={"Authorization": "Bearer test-key"},
+        )
+    finally:
+        app.dependency_overrides = original_overrides
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == "c1"
+    assert response.json()["alias"] == "Acme"
+    mock_prisma_client.db.litellm_endusertable.find_first.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # Characterization (golden-master) tests.
 #
