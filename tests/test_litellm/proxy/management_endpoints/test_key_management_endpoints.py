@@ -31,6 +31,7 @@ from litellm.proxy.auth.auth_checks import _delete_cache_key_object, _project_ca
 from litellm.proxy.auth.user_api_key_auth import UserAPIKeyAuth
 from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
 from litellm.proxy.management_endpoints.key_management_endpoints import (
+    _can_user_query_key_info,
     _check_org_key_limits,
     _check_project_key_limits,
     _check_team_key_limits,
@@ -5525,6 +5526,78 @@ async def test_can_modify_verification_token_proxy_admin_personal_key(monkeypatc
         user_api_key_cache=mock_user_api_key_cache,
         user_api_key_dict=user_api_key_dict,
         prisma_client=mock_prisma_client,
+    )
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_can_user_query_key_info_rejects_null_user_id_on_unscoped_keys():
+    """
+    Security regression: two unscoped keys (user_id=NULL) must not read each
+    other's /key/info. `None == None` is True in Python, so the old comparison
+    treated every unscoped key as owned by every other unscoped key.
+    """
+    key_info = LiteLLM_VerificationToken(
+        token="hashed-target",
+        user_id=None,
+        team_id=None,
+    )
+    caller = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id=None,
+        api_key="hashed-caller",
+    )
+
+    result = await _can_user_query_key_info(
+        user_api_key_dict=caller,
+        key="hashed-target",
+        key_info=key_info,
+    )
+
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_can_user_query_key_info_allows_own_key_when_both_user_ids_null():
+    """A key may still read its own /key/info when user_id is unset."""
+    key_info = LiteLLM_VerificationToken(
+        token="hashed-self",
+        user_id=None,
+        team_id=None,
+    )
+    caller = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id=None,
+        api_key="hashed-self",
+    )
+
+    result = await _can_user_query_key_info(
+        user_api_key_dict=caller,
+        key="hashed-self",
+        key_info=key_info,
+    )
+
+    assert result is True
+
+
+@pytest.mark.asyncio
+async def test_can_user_query_key_info_allows_matching_non_null_user_id():
+    key_info = LiteLLM_VerificationToken(
+        token="hashed-target",
+        user_id="user-1",
+        team_id=None,
+    )
+    caller = UserAPIKeyAuth(
+        user_role=LitellmUserRoles.INTERNAL_USER,
+        user_id="user-1",
+        api_key="hashed-caller",
+    )
+
+    result = await _can_user_query_key_info(
+        user_api_key_dict=caller,
+        key="hashed-target",
+        key_info=key_info,
     )
 
     assert result is True
