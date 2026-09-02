@@ -698,9 +698,7 @@ def test_info_customer_rejects_non_proxy_admin(mock_prisma_client, role):
         user_id="org-admin-1" if role is not None else None,
         user_role=role,
     )
-    mock_prisma_client.db.litellm_endusertable.find_first = AsyncMock(
-        return_value=_row(_FULL_DB_ROW)
-    )
+    mock_prisma_client.db.litellm_endusertable.find_first = AsyncMock(return_value=_row(_FULL_DB_ROW))
     try:
         response = client.get(
             "/customer/info?end_user_id=cust-secret-1&organization_id=org-x",
@@ -721,9 +719,7 @@ def test_info_customer_proxy_admin_view_only_can_read(mock_prisma_client):
         user_id="viewer",
         user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
     )
-    mock_prisma_client.db.litellm_endusertable.find_first = AsyncMock(
-        return_value=_row(_FULL_DB_ROW)
-    )
+    mock_prisma_client.db.litellm_endusertable.find_first = AsyncMock(return_value=_row(_FULL_DB_ROW))
     try:
         response = client.get(
             "/customer/info?end_user_id=c1",
