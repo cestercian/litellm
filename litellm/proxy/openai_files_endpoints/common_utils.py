@@ -976,6 +976,23 @@ def validate_managed_files_requirement(
         )
 
 
+def reject_unscoped_provider_file_list() -> None:
+    from fastapi import HTTPException
+
+    import litellm
+
+    if litellm.require_managed_files is not True:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Raw provider file listing cannot be used when require_managed_files is enabled in "
+            "litellm_settings. List files without a provider path prefix so the managed file store "
+            "can scope results to the caller."
+        ),
+    )
+
+
 async def validate_managed_id_requirement(
     resource_id: str | None,
     resource_kind: Literal["file", "batch", "fine-tuning job"],
