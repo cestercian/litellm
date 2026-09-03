@@ -384,6 +384,7 @@ enable_gemini_default_thinking_level_low: bool = (
 logging: bool = True
 enable_loadbalancing_on_batch_endpoints: Optional[bool] = None
 require_managed_files: bool = False  # proxy only - require target_model_names on POST /v1/files
+require_managed_vector_stores: bool = False  # proxy only - reject unmanaged / provider-native vector store ids
 enable_caching_on_provider_specific_optional_params: bool = (
     False  # feature-flag for caching on optional params - e.g. 'top_k'
 )

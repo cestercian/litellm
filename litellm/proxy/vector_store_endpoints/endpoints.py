@@ -19,7 +19,7 @@ from litellm.proxy.vector_store_endpoints.management_endpoints import (
 )
 from litellm.proxy.vector_store_endpoints.utils import (
     assert_proxy_admin_for_vector_store_index_management,
-    assert_user_can_access_vector_store,
+    assert_user_can_access_vector_store_id,
     get_litellm_managed_vector_store,
 )
 from litellm.repositories.table_repositories import ManagedVectorStoreIndexRepository
@@ -48,16 +48,15 @@ async def _update_request_data_with_litellm_managed_vector_store_registry(
     Raises:
         HTTPException: If user doesn't have access to the vector store
     """
-    vector_store_to_run: Final[LiteLLM_ManagedVectorStore | None] = await get_litellm_managed_vector_store(
-        vector_store_id=vector_store_id
+    vector_store_to_run: Final[LiteLLM_ManagedVectorStore | None] = (
+        await assert_user_can_access_vector_store_id(
+            vector_store_id=vector_store_id,
+            user_api_key_dict=user_api_key_dict,
+        )
+        if user_api_key_dict is not None
+        else await get_litellm_managed_vector_store(vector_store_id=vector_store_id)
     )
     if vector_store_to_run is not None:
-        if user_api_key_dict is not None:
-            await assert_user_can_access_vector_store(
-                vector_store=vector_store_to_run,
-                user_api_key_dict=user_api_key_dict,
-            )
-
         if "custom_llm_provider" in vector_store_to_run:
             data["custom_llm_provider"] = vector_store_to_run.get("custom_llm_provider")
 

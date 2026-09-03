@@ -258,6 +258,19 @@ async def assert_user_can_access_vector_store(
         raise HTTPException(status_code=403, detail=detail)
 
 
+def _unmanaged_vector_store_ids_allowed(user_api_key_dict: UserAPIKeyAuth) -> bool:
+    """
+    True when a caller may send a vector store id that is not in the managed registry.
+
+    Virtual keys share the proxy's provider credentials, so an unknown ``vs_…`` id
+    would be forwarded to that shared project. Only a proxy admin keeps the
+    operator pass-through, and ``require_managed_vector_stores`` turns even that off.
+    """
+    if litellm.require_managed_vector_stores is True:
+        return False
+    return _is_proxy_admin(user_api_key_dict)
+
+
 async def assert_user_can_access_vector_store_id(
     vector_store_id: str,
     user_api_key_dict: UserAPIKeyAuth,
@@ -266,7 +279,9 @@ async def assert_user_can_access_vector_store_id(
     """
     Resolve a managed vector store id and enforce ownership if it exists.
 
-    Unknown ids are treated as provider-native ids and are not rejected here.
+    Unknown ids are provider-native. Virtual keys cannot use them against shared
+    provider credentials. Proxy admins still can unless require_managed_vector_stores
+    is enabled.
     """
     vector_store: Final = await get_litellm_managed_vector_store(vector_store_id=vector_store_id)
     if vector_store is not None:
@@ -275,7 +290,10 @@ async def assert_user_can_access_vector_store_id(
             user_api_key_dict=user_api_key_dict,
             detail=detail,
         )
-    return vector_store
+        return vector_store
+    if not _unmanaged_vector_store_ids_allowed(user_api_key_dict):
+        raise HTTPException(status_code=403, detail=detail)
+    return None
 
 
 def _does_endpoint_match(endpoint_path: str, request_path: str) -> bool:
