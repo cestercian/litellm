@@ -16,7 +16,10 @@ from litellm._logging import verbose_proxy_logger
 from litellm.batches.main import CancelBatchRequest, RetrieveBatchRequest
 from litellm.proxy._types import *
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
-from litellm.proxy.batches_endpoints.common_utils import validate_batch_list_limit
+from litellm.proxy.batches_endpoints.common_utils import (
+    assert_caller_can_list_shared_provider_batches,
+    validate_batch_list_limit,
+)
 from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
 from litellm.proxy.common_utils.callback_utils import sanitize_openai_provider_metadata
 from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
@@ -757,68 +760,65 @@ async def list_batches(
                 target_model_names=target_model_names,
                 llm_router=llm_router,
             )
-        elif model_param := (
-            data.get("model") or request.query_params.get("model") or request.headers.get("x-litellm-model")
-        ):
-            # SCENARIO 2: Use model-based routing from header/query/body
-            credentials: Final = get_credentials_for_model(
-                llm_router=llm_router,
-                model_id=model_param,
-                operation_context="batch listing",
-            )
-
-            prepare_data_with_credentials(data=data, credentials=credentials)
-
-            response = await litellm.alist_batches(
-                custom_llm_provider=credentials["custom_llm_provider"],
-                after=after,
-                limit=limit,
-                **data,
-            )
-
-            # Encode batch IDs in the list response so clients can use
-            # them for retrieve/cancel/file downloads through the proxy.
-            response_data: Final = getattr(response, "data", None)
-            if response_data:
-                for batch in response_data:
-                    encode_batch_response_ids(batch, model=model_param)
-
-            verbose_proxy_logger.debug("Listed batches using model: %s", model_param)
-
-        # SCENARIO 2 (alternative): target_model_names based routing
-        elif target_model_names or data.get("target_model_names", None):
-            target_model_names = target_model_names or data.get("target_model_names", None)
-            if target_model_names is None:
-                raise ValueError("target_model_names is required for this routing scenario")
-            model: Final = target_model_names.split(",")[0]
-            data.pop("model", None)
-            response = await llm_router.alist_batches(
-                model=model,
-                after=after,
-                limit=limit,
-                **data,
-            )
-
-        # SCENARIO 3: Fallback to custom_llm_provider (uses env variables)
         else:
-            custom_llm_provider: Final = (
-                provider
-                or get_custom_llm_provider_from_request_headers(request=request)
-                or get_custom_llm_provider_from_request_query(request=request)
-                or "openai"
-            )
-            apply_team_provider_credentials(
-                data=data,
-                llm_router=llm_router,
-                user_api_key_dict=user_api_key_dict,
-                custom_llm_provider=custom_llm_provider,
-            )
-            response = await litellm.alist_batches(
-                custom_llm_provider=custom_llm_provider,
-                after=after,
-                limit=limit,
-                **data,
-            )
+            assert_caller_can_list_shared_provider_batches(user_api_key_dict)
+            if model_param := (
+                data.get("model") or request.query_params.get("model") or request.headers.get("x-litellm-model")
+            ):
+                credentials: Final = get_credentials_for_model(
+                    llm_router=llm_router,
+                    model_id=model_param,
+                    operation_context="batch listing",
+                )
+
+                prepare_data_with_credentials(data=data, credentials=credentials)
+
+                response = await litellm.alist_batches(
+                    custom_llm_provider=credentials["custom_llm_provider"],
+                    after=after,
+                    limit=limit,
+                    **data,
+                )
+
+                response_data: Final = getattr(response, "data", None)
+                if response_data:
+                    for batch in response_data:
+                        encode_batch_response_ids(batch, model=model_param)
+
+                verbose_proxy_logger.debug("Listed batches using model: %s", model_param)
+
+            elif target_model_names or data.get("target_model_names", None):
+                target_model_names = target_model_names or data.get("target_model_names", None)
+                if target_model_names is None:
+                    raise ValueError("target_model_names is required for this routing scenario")
+                model: Final = target_model_names.split(",")[0]
+                data.pop("model", None)
+                response = await llm_router.alist_batches(
+                    model=model,
+                    after=after,
+                    limit=limit,
+                    **data,
+                )
+
+            else:
+                custom_llm_provider: Final = (
+                    provider
+                    or get_custom_llm_provider_from_request_headers(request=request)
+                    or get_custom_llm_provider_from_request_query(request=request)
+                    or "openai"
+                )
+                apply_team_provider_credentials(
+                    data=data,
+                    llm_router=llm_router,
+                    user_api_key_dict=user_api_key_dict,
+                    custom_llm_provider=custom_llm_provider,
+                )
+                response = await litellm.alist_batches(
+                    custom_llm_provider=custom_llm_provider,
+                    after=after,
+                    limit=limit,
+                    **data,
+                )
 
         ## POST CALL HOOKS ###
         _response: Final = await proxy_logging_obj.post_call_success_hook(

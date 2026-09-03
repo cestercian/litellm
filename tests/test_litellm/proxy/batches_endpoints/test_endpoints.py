@@ -41,7 +41,10 @@ import pytest
 import litellm
 import litellm.proxy.batches_endpoints.endpoints as endpoints
 import litellm.proxy.proxy_server as proxy_server
-from litellm.proxy._types import ProxyException, UserAPIKeyAuth
+from litellm.proxy._types import LitellmUserRoles, ProxyException, UserAPIKeyAuth
+from litellm.proxy.batches_endpoints.common_utils import (
+    assert_caller_can_list_shared_provider_batches,
+)
 from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
 from litellm.proxy.openai_files_endpoints.common_utils import (
     encode_file_id_with_model,
@@ -75,6 +78,14 @@ CREDS: Dict[str, Dict[str, str]] = {
 
 # A real model-encoded file id: decodes to "azure/gpt-4o", strips to "file-original123".
 AZURE_FILE_ID = encode_file_id_with_model("file-original123", "azure/gpt-4o", id_type="file")
+
+ADMIN_USER = UserAPIKeyAuth(api_key="sk-admin", user_role=LitellmUserRoles.PROXY_ADMIN)
+VIRTUAL_KEY_USER = UserAPIKeyAuth(
+    api_key="sk-test",
+    user_id="user-1",
+    team_id="team-a",
+    user_role=LitellmUserRoles.INTERNAL_USER,
+)
 
 
 def make_batch(
@@ -1493,9 +1504,10 @@ async def test_retrieve__exception_calls_failure_hook(retrieve_harness, openai_e
 #                                                                             #
 #   Branch order (first match wins):                                          #
 #     1. managed_files hook present  -> managed_files_obj.list_user_batches    #
-#     2. model from body/query/header -> litellm.alist_batches + id encode     #
-#     3. target_model_names (param or body) -> llm_router.alist_batches        #
-#     4. fallback -> litellm.alist_batches via env-var custom_llm_provider     #
+#     2. otherwise, non-admin keys are 403'd before any shared-provider list   #
+#     3. admin + model from body/query/header -> litellm.alist_batches         #
+#     4. admin + target_model_names (param or body) -> llm_router.alist_batches#
+#     5. admin fallback -> litellm.alist_batches via env-var provider          #
 #                                                                             #
 #   llm_router is required; absence is a 500 before any branch runs.          #
 # =========================================================================== #
@@ -1628,7 +1640,7 @@ async def call_list(
         provider=provider,
         limit=limit,
         after=after,
-        user_api_key_dict=user or UserAPIKeyAuth(api_key="sk-test"),
+        user_api_key_dict=user or ADMIN_USER,
         target_model_names=target_model_names,
     )
 
@@ -1802,8 +1814,9 @@ async def test_list__target_model_names_takes_first_only(list_harness):
 
 
 # --------------------------------------------------------------------------- #
-# Branch 4 - fallback to custom_llm_provider (env-var creds). MUST NOT touch
-# the credential resolver or the router.
+# Branch 4 - fallback to custom_llm_provider (env-var creds). Admin-only.
+# Virtual keys are 403'd before this branch. MUST NOT touch the credential
+# resolver or the router.
 # --------------------------------------------------------------------------- #
 
 
@@ -1889,6 +1902,80 @@ async def test_list__exception_calls_failure_hook(list_harness):
 
     list_harness.logging.post_call_failure_hook.assert_called_once()
     assert list_harness.logging.post_call_failure_hook.call_args.kwargs["original_exception"].args[0] == "provider boom"
+
+
+@pytest.mark.asyncio
+async def test_list__virtual_key_without_managed_hook_does_not_hit_shared_provider(
+    list_harness,
+):
+    with pytest.raises(ProxyException) as exc:
+        await call_list(list_harness, user=VIRTUAL_KEY_USER)
+
+    assert exc.value.code == "403"
+    list_harness.litellm_alist.assert_not_called()
+    list_harness.router_alist.assert_not_called()
+    list_harness.creds_resolver.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list__virtual_key_cannot_bypass_shared_provider_block_with_model_param(
+    list_harness,
+):
+    with pytest.raises(ProxyException) as exc:
+        await call_list(list_harness, user=VIRTUAL_KEY_USER, body={"model": "azure/gpt-4o"})
+
+    assert exc.value.code == "403"
+    list_harness.litellm_alist.assert_not_called()
+    list_harness.router_alist.assert_not_called()
+    list_harness.creds_resolver.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list__virtual_key_still_uses_managed_files_when_hook_present(list_harness):
+    page = FakeListPage([make_batch(id="batch-owned")])
+    list_user_batches = list_harness.set_managed_files(page)
+
+    resp = await call_list(list_harness, user=VIRTUAL_KEY_USER, limit=5)
+
+    list_user_batches.assert_called_once()
+    assert list_user_batches.call_args.kwargs["user_api_key_dict"] is VIRTUAL_KEY_USER
+    list_harness.litellm_alist.assert_not_called()
+    list_harness.router_alist.assert_not_called()
+    assert resp is page
+
+
+@pytest.mark.asyncio
+async def test_list__proxy_admin_view_only_can_use_shared_provider_fallback(list_harness):
+    viewer = UserAPIKeyAuth(
+        api_key="sk-viewer",
+        user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
+    )
+
+    await call_list(list_harness, user=viewer)
+
+    assert list_harness.litellm_alist.call_count == 1
+    list_harness.router_alist.assert_not_called()
+
+
+def test_assert_caller_can_list_shared_provider_batches_allows_admin():
+    assert_caller_can_list_shared_provider_batches(ADMIN_USER)
+
+
+def test_assert_caller_can_list_shared_provider_batches_allows_view_only_admin():
+    viewer = UserAPIKeyAuth(
+        api_key="sk-viewer",
+        user_role=LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
+    )
+    assert_caller_can_list_shared_provider_batches(viewer)
+
+
+def test_assert_caller_can_list_shared_provider_batches_rejects_virtual_key():
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        assert_caller_can_list_shared_provider_batches(VIRTUAL_KEY_USER)
+
+    assert exc.value.status_code == 403
 
 
 # =========================================================================== #

@@ -502,6 +502,29 @@ async def test_update_request_data_with_litellm_managed_vector_store_registry():
 
 
 @pytest.mark.asyncio
+async def test_update_request_data_rejects_unknown_id_for_virtual_key():
+    from litellm.proxy._types import LitellmUserRoles
+
+    virtual_key = UserAPIKeyAuth(
+        api_key="sk-test",
+        team_id="team-a",
+        user_role=LitellmUserRoles.INTERNAL_USER,
+    )
+    with (
+        patch.object(litellm, "vector_store_registry", None),
+        patch("litellm.proxy.proxy_server.prisma_client", None),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await _update_request_data_with_litellm_managed_vector_store_registry(
+                data={"existing_key": "existing_value"},
+                vector_store_id="vs_unmanaged",
+                user_api_key_dict=virtual_key,
+            )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_update_request_data_resolves_embedding_config_at_use_time():
     """When the persisted vector store row carries only a
     ``litellm_embedding_model`` reference (the new behaviour after

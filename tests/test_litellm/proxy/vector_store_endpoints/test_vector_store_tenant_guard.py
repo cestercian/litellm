@@ -4,7 +4,11 @@ import pytest
 from fastapi import HTTPException, Request, Response
 
 import litellm
-from litellm.proxy._types import LiteLLM_ManagedVectorStoresTable, UserAPIKeyAuth
+from litellm.proxy._types import (
+    LiteLLM_ManagedVectorStoresTable,
+    LitellmUserRoles,
+    UserAPIKeyAuth,
+)
 
 
 def _mock_request() -> MagicMock:
@@ -26,6 +30,13 @@ async def test_vector_store_search_forces_path_id_over_body_id():
         captured_data.update(self.data)
         return {"ok": True}
 
+    mock_registry = MagicMock()
+    mock_registry.get_litellm_managed_vector_store_from_registry.return_value = {
+        "vector_store_id": "vs_path_allowed",
+        "custom_llm_provider": "openai",
+        "team_id": "team-a",
+    }
+
     request = _mock_request()
     with (
         patch(
@@ -37,7 +48,7 @@ async def test_vector_store_search_forces_path_id_over_body_id():
                 }
             ),
         ),
-        patch.object(litellm, "vector_store_registry", None),
+        patch.object(litellm, "vector_store_registry", mock_registry),
         patch("litellm.proxy.proxy_server.prisma_client", None),
         patch(
             "litellm.proxy.vector_store_endpoints.endpoints.ProxyBaseLLMRequestProcessing.base_process_llm_request",
@@ -607,3 +618,133 @@ async def test_azure_passthrough_denies_other_team_vector_store_index():
             )
 
     assert exc_info.value.status_code == 403
+
+
+VIRTUAL_KEY = UserAPIKeyAuth(
+    api_key="sk-test",
+    user_id="user-1",
+    team_id="team-a",
+    user_role=LitellmUserRoles.INTERNAL_USER,
+)
+PROXY_ADMIN_KEY = UserAPIKeyAuth(
+    api_key="sk-admin",
+    user_role=LitellmUserRoles.PROXY_ADMIN,
+)
+
+
+@pytest.mark.asyncio
+async def test_unknown_vector_store_id_denied_for_virtual_key():
+    from litellm.proxy.vector_store_endpoints.utils import (
+        assert_user_can_access_vector_store_id,
+    )
+
+    with (
+        patch.object(litellm, "vector_store_registry", None),
+        patch("litellm.proxy.proxy_server.prisma_client", None),
+        patch.object(litellm, "require_managed_vector_stores", False),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await assert_user_can_access_vector_store_id(
+                vector_store_id="vs_unmanaged",
+                user_api_key_dict=VIRTUAL_KEY,
+            )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_unknown_vector_store_id_allowed_for_proxy_admin():
+    from litellm.proxy.vector_store_endpoints.utils import (
+        assert_user_can_access_vector_store_id,
+    )
+
+    with (
+        patch.object(litellm, "vector_store_registry", None),
+        patch("litellm.proxy.proxy_server.prisma_client", None),
+        patch.object(litellm, "require_managed_vector_stores", False),
+    ):
+        result = await assert_user_can_access_vector_store_id(
+            vector_store_id="vs_unmanaged",
+            user_api_key_dict=PROXY_ADMIN_KEY,
+        )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_managed_vector_store_still_accessible_to_owning_virtual_key():
+    from litellm.proxy.vector_store_endpoints.utils import (
+        assert_user_can_access_vector_store_id,
+    )
+
+    mock_registry = MagicMock()
+    mock_registry.get_litellm_managed_vector_store_from_registry.return_value = {
+        "vector_store_id": "vs_owned",
+        "custom_llm_provider": "openai",
+        "team_id": "team-a",
+    }
+
+    with patch.object(litellm, "vector_store_registry", mock_registry):
+        result = await assert_user_can_access_vector_store_id(
+            vector_store_id="vs_owned",
+            user_api_key_dict=VIRTUAL_KEY,
+        )
+
+    assert result is not None
+    assert result["vector_store_id"] == "vs_owned"
+
+
+@pytest.mark.asyncio
+async def test_unknown_vector_store_id_denied_when_managed_vector_stores_required():
+    from litellm.proxy.vector_store_endpoints.utils import (
+        assert_user_can_access_vector_store_id,
+    )
+
+    with (
+        patch.object(litellm, "vector_store_registry", None),
+        patch("litellm.proxy.proxy_server.prisma_client", None),
+        patch.object(litellm, "require_managed_vector_stores", True),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await assert_user_can_access_vector_store_id(
+                vector_store_id="vs_unmanaged",
+                user_api_key_dict=PROXY_ADMIN_KEY,
+            )
+
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "endpoint_name",
+    ["vector_store_retrieve", "vector_store_delete"],
+)
+async def test_vector_store_retrieve_and_delete_reject_unknown_id_for_virtual_key(
+    endpoint_name,
+):
+    from litellm.proxy.vector_store_endpoints import endpoints as vs_endpoints
+
+    endpoint = getattr(vs_endpoints, endpoint_name)
+    mock_base_process = AsyncMock()
+    request = _mock_request()
+    request.method = "GET" if endpoint_name == "vector_store_retrieve" else "DELETE"
+
+    with (
+        patch.object(litellm, "vector_store_registry", None),
+        patch("litellm.proxy.proxy_server.prisma_client", None),
+        patch.object(
+            vs_endpoints.ProxyBaseLLMRequestProcessing,
+            "base_process_llm_request",
+            new=mock_base_process,
+        ),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await endpoint(
+                request=request,
+                vector_store_id="vs_other_tenant",
+                fastapi_response=Response(),
+                user_api_key_dict=VIRTUAL_KEY,
+            )
+
+    assert exc_info.value.status_code == 403
+    mock_base_process.assert_not_called()
